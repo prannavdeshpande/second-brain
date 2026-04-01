@@ -1,62 +1,127 @@
-# Second Brain Backend (Node.js/Express)
+# Second Brain — Backend
 
-This is the main application backend for the Second Brain project. It handles user authentication, content management, and acts as a gateway to the Python-based Machine Learning service for content ingestion and querying.
+The Second Brain backend is a Node.js/Express API that handles authentication, content management (upload/update/share), user activity/stats, and billing (Stripe). For content ingestion and AI-powered search, it forwards uploads/URLs and queries to a Python FastAPI “ML service” that performs RAG-style indexing and retrieval.
 
-## Prerequisites
+---
 
-- Node.js (v18 or later)
-- npm
-- MongoDB
-- Python (for the ML service)
-- Docker (optional, but recommended for running dependencies)
+## Architecture (high-level)
 
-## Setup & Installation
+```mermaid
+graph TD
+  U[User] -->|Browser| FE["Frontend (Vite + React)"]
+  FE -->|REST + JWT| API["Backend API (Express)"]
+  API -->|MongoDB queries| DB[(MongoDB)]
+  API -->|multipart: file OR url| MLS["ML Service (FastAPI)"]
+  MLS -->|persist embeddings| VDB[(Chroma Vector DB)]
+  MLS -->|store originals| S3[(AWS S3)]
+  API -->|checkout/webhooks| Stripe[Stripe]
+```
 
-1.  **Clone the repository:**
-    ```bash
-    git clone <your-repo-url>
-    cd second-brain-backend
-    ```
+> Mermaid preview: GitHub will render the diagram automatically.
 
-2.  **Install dependencies:**
-    ```bash
-    npm install
-    ```
+---
 
-3.  **Set up Environment Variables:**
-    Create a `.env` file in the root of this project and add the following variables:
-    ```ini
-    PORT=5001
-    MONGO_URI=mongodb://localhost:27017/second_brain_db
-    JWT_SECRET=your_super_secret_jwt_key
-    ML_API_URL=http://localhost:8000
-    ```
+## Key modules
 
-4.  **Run the Python ML Service:**
-    Navigate to your Python project directory (`main.py`, `ingest.py`, etc.) and start its server, which should be running on the `ML_API_URL` (e.g., `http://localhost:8000`).
+- **Express server & routing**: request handling, CORS, JSON parsing, route mounting.
+- **Auth**: email/password JWT auth + Google/GitHub OAuth (Passport).
+- **Content**: CRUD, sharing, and upload forwarding to ML service.
+- **Search**: query → ML service → (optional) enrich sources with MongoDB metadata.
+- **User**: profile, recent activity feed, usage stats.
+- **Billing**: Stripe checkout sessions, customer portal, webhook processing.
 
-## Running the Application
+---
 
-1.  **Start the Node.js server:**
-    ```bash
-    # For development with auto-reloading
-    npm run dev
+## Features (backend)
 
-    # For production
-    npm start
-    ```
+- JWT-protected REST endpoints
+- Google + GitHub OAuth using Passport strategies
+- Content ingestion via **file upload** or **URL ingestion** (forwarded to ML service)
+- AI search endpoint that returns **answer + sources** (from ML service)
+- Activity logging (add/edit/delete/share)
+- Stripe subscriptions: checkout, billing portal, webhooks
 
-2.  The server will start on the port specified in your `.env` file (e.g., `http://localhost:5001`).
+---
 
-## API Endpoints
+## Request flow (typical)
 
--   **Authentication**
-    -   `POST /api/auth/register`: Create a new user.
-    -   `POST /api/auth/login`: Log in and receive a JWT.
+### Upload + index content
 
--   **Content Management** (Requires Bearer Token)
-    -   `POST /api/content/upload`: Upload a file or URL. Use multipart/form-data.
-    -   `GET /api/content`: Get all content for the logged-in user.
+```mermaid
+sequenceDiagram
+  autonumber
+  participant FE as Frontend
+  participant API as Express API
+  participant ML as FastAPI ML Service
+  participant S3 as S3
+  participant VDB as Chroma
+  participant DB as MongoDB
 
--   **Search** (Requires Bearer Token)
-    -   `POST /api/search`: Perform a search query against your content.
+  FE->>API: POST /api/content (JWT, file OR url, title, tags...)
+  API->>ML: POST /upload/ (file/url)
+  ML->>S3: Store original (if file)
+  ML->>VDB: Chunk + embed + persist
+  ML-->>API: { type, s3_path, ... }
+  API->>DB: Create Content doc + Activity log
+  API-->>FE: 201 Created (content + mlServiceResponse)
+```
+
+### Search
+
+```mermaid
+flowchart TD
+  A["Frontend POST /api/search"] --> B["Backend (protect middleware)"]
+  B --> C["Send query to ML service /query/"]
+  C --> D["Receive answer + sources"]
+  D --> E["Optional: enrich sources from MongoDB"]
+  E --> F["Return answer + sources"]
+```
+
+---
+
+## Getting started (quick glance)
+
+### 1) Install
+
+```bash
+cd Backend
+npm install
+```
+
+### 2) Environment variables
+
+Create `Backend/.env`:
+
+```ini
+# Server
+PORT=5001
+CLIENT_URL=http://localhost:8080
+
+# Database
+MONGO_URI=mongodb://localhost:27017/second_brain_db
+
+# Auth
+JWT_SECRET=your_super_secret_jwt_key
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
+
+# ML service
+ML_API_URL=http://localhost:8000
+
+# Stripe
+STRIPE_SECRET_KEY=
+STRIPE_WEBHOOK_SECRET=
+STRIPE_PREMIUM_PLAN_ID=
+STRIPE_PRO_PLAN_ID=
+```
+
+### 3) Run
+
+```bash
+npm run dev
+# server on http://localhost:5001 (by default)
+```
+
+> Note: The Stripe webhook endpoint uses a raw body handler (mounted in `server.js`) so Stripe signatures can be verified.
